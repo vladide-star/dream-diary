@@ -106,6 +106,10 @@
       #printArea .field { margin:8px 0; }
     }
   </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/vfs_fonts.js"></script>
+
 </head>
 <body>
 <div class="container">
@@ -115,7 +119,7 @@
 
   <div class="toolbar">
     <button class="btn-secondary" onclick="toggleStats()">Статистика</button>
-    <button class="btn-secondary" onclick="printDiary()">PDF / Печать</button>
+    <button class="btn-secondary" onclick="printDiary()">Скачать PDF</button>
     <button class="btn-secondary" onclick="exportDreams()">Резервная копия</button>
     <button class="btn-secondary wide" onclick="document.getElementById('importFile').click()">Восстановить из копии</button>
     <input id="importFile" type="file" accept="application/json,.json" style="display:none" onchange="importDreams(event)">
@@ -210,7 +214,6 @@
   </div>
 </div>
 
-<div id="printArea" style="display:none;"></div>
 
 <script>
   let dreams = safeLoadDreams();
@@ -599,38 +602,120 @@
     reader.readAsText(file,'utf-8');
   }
 
-  // PDF через системное окно печати. На iPad в нём можно сохранить/поделиться PDF.
-  function dreamArticle(d) {
-    const field = (name,value) => value ? `<div class="field"><strong>${name}:</strong> ${escapeHtml(value)}</div>` : '';
-    return `<article>
-      <h2>${escapeHtml(d.title)}</h2>
-      <div class="meta">${formatDate(d.date)}</div>
-      <div class="field" style="white-space:pre-wrap;margin-top:12px;">${escapeHtml(d.text)}</div>
-      ${field('Персонажи',d.characters)}
-      ${field('Места',d.places)}
-      ${field('Символы / образы',d.symbols)}
-      ${field('Эмоции',d.emotions)}
-      ${field('Заметки',d.notes)}
-    </article>`;
+  // Настоящий PDF-файл через pdfMake.
+  function cleanForPdf(value='') {
+    return String(value || '').trim();
+  }
+
+  function dreamToPdfBlocks(d) {
+    const blocks = [
+      { text: d.title || 'Без названия', style: 'dreamTitle', margin: [0, 0, 0, 4] },
+      { text: formatDate(d.date), style: 'date', margin: [0, 0, 0, 10] }
+    ];
+
+    if (cleanForPdf(d.text)) {
+      blocks.push({ text: cleanForPdf(d.text), style: 'body', margin: [0, 0, 0, 10] });
+    }
+
+    const addField = (label, value) => {
+      if (!cleanForPdf(value)) return;
+      blocks.push({
+        columns: [
+          { width: 'auto', text: label + ': ', bold: true },
+          { width: '*', text: cleanForPdf(value) }
+        ],
+        margin: [0, 2, 0, 2]
+      });
+    };
+
+    addField('Персонажи', d.characters);
+    addField('Места', d.places);
+    addField('Символы / образы', d.symbols);
+    addField('Эмоции', d.emotions);
+    addField('Заметки', d.notes);
+
+    blocks.push({ text: '', margin: [0, 0, 0, 14] });
+    return blocks;
+  }
+
+  function pdfDefinitionForDreams(items, title='Дневник снов') {
+    const content = [
+      { text: title, style: 'header', margin: [0, 0, 0, 18] }
+    ];
+
+    items.forEach((d, index) => {
+      content.push(...dreamToPdfBlocks(d));
+      if (index !== items.length - 1) {
+        content.push({
+          canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 0.5, lineColor: '#999999' }],
+          margin: [0, 4, 0, 18]
+        });
+      }
+    });
+
+    return {
+      pageSize: 'A4',
+      pageMargins: [42, 46, 42, 46],
+      info: {
+        title,
+        author: 'Дневник снов'
+      },
+      content,
+      defaultStyle: {
+        font: 'Roboto',
+        fontSize: 11,
+        lineHeight: 1.25
+      },
+      styles: {
+        header: { fontSize: 20, bold: true, color: '#3f2d8a' },
+        dreamTitle: { fontSize: 15, bold: true },
+        date: { fontSize: 9, color: '#666666' },
+        body: { fontSize: 11 }
+      }
+    };
+  }
+
+  function downloadPdf(docDefinition, filename) {
+    if (!window.pdfMake) {
+      alert('Модуль PDF ещё не загрузился. Проверь интернет и повтори через несколько секунд.');
+      return;
+    }
+
+    try {
+      pdfMake.createPdf(docDefinition).download(filename);
+    } catch (error) {
+      alert('Не удалось создать PDF. Попробуй ещё раз.');
+      console.error(error);
+    }
   }
 
   function printDiary() {
-    if (!dreams.length) { alert('В дневнике пока нет записей.'); return; }
-    const sorted = [...dreams].sort((a,b) => new Date(b.date)-new Date(a.date));
-    const area = document.getElementById('printArea');
-    area.innerHTML = `<h1>Дневник снов</h1>${sorted.map(dreamArticle).join('')}`;
-    area.style.display='block';
-    setTimeout(() => { window.print(); area.style.display='none'; }, 100);
+    if (!dreams.length) {
+      alert('В дневнике пока нет записей.');
+      return;
+    }
+
+    const sorted = [...dreams].sort((a,b) => new Date(b.date) - new Date(a.date));
+    const filename = `dream-diary-${new Date().toISOString().slice(0,10)}.pdf`;
+    downloadPdf(pdfDefinitionForDreams(sorted, 'Дневник снов'), filename);
   }
 
   function printCurrentDream() {
     const id = document.getElementById('dreamId').value;
     const d = dreams.find(x => String(x.id) === String(id));
-    if (!d) return;
-    const area = document.getElementById('printArea');
-    area.innerHTML = `<h1>Дневник снов</h1>${dreamArticle(d)}`;
-    area.style.display='block';
-    setTimeout(() => { window.print(); area.style.display='none'; }, 100);
+
+    if (!d) {
+      alert('Сначала сохрани сон.');
+      return;
+    }
+
+    const safeTitle = (d.title || 'dream')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, '-')
+      .slice(0, 60);
+
+    const filename = `${safeTitle}-${d.date || 'dream'}.pdf`;
+    downloadPdf(pdfDefinitionForDreams([d], d.title || 'Сон'), filename);
   }
 
   window.onclick = event => {
