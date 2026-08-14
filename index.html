@@ -216,6 +216,8 @@
   let dreams = safeLoadDreams();
   let recognition = null;
   let isListening = false;
+  let voiceShouldRun = false;
+  let voiceRestartTimer = null;
 
   function safeLoadDreams() {
     try {
@@ -374,9 +376,14 @@
     catch { return date; }
   }
 
-  // Голос → текст. Если браузер не предоставляет распознавание речи, приложение сообщит об этом.
+  // Голос → текст с автоматическим перезапуском.
+  // Браузер может сам завершать одну сессию распознавания. Пока пользователь
+  // не нажал «Остановить», приложение запускает следующую сессию автоматически.
   function toggleVoice() {
-    if (isListening) { stopVoice(); return; }
+    if (voiceShouldRun) {
+      stopVoice();
+      return;
+    }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -385,61 +392,135 @@
       return;
     }
 
+    voiceShouldRun = true;
+    startVoiceSession(SpeechRecognition);
+  }
+
+  function startVoiceSession(SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition) {
+    if (!voiceShouldRun || !SpeechRecognition) return;
+
+    clearTimeout(voiceRestartTimer);
+
     recognition = new SpeechRecognition();
     recognition.lang = 'ru-RU';
     recognition.continuous = true;
     recognition.interimResults = true;
 
     let finalChunk = '';
+
     recognition.onstart = () => {
       isListening = true;
-      document.getElementById('voiceBtn').classList.add('recording');
-      document.getElementById('voiceBtn').textContent = '⏹ Остановить';
+      const btn = document.getElementById('voiceBtn');
+      btn.classList.add('recording');
+      btn.textContent = '⏹ Остановить';
       document.getElementById('voiceStatus').textContent = 'Слушаю… говори свободно.';
     };
 
     recognition.onresult = event => {
       let interim = '';
+
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const text = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalChunk += text + ' ';
-        else interim += text;
+        const chunk = event.results[i][0].transcript;
+
+        if (event.results[i].isFinal) {
+          finalChunk += chunk + ' ';
+        } else {
+          interim += chunk;
+        }
       }
+
       if (finalChunk) {
         const field = document.getElementById('dreamText');
-        const separator = field.value && !field.value.endsWith(' ') ? ' ' : '';
-        field.value += separator + finalChunk.trim();
+        const clean = finalChunk.trim();
+
+        if (clean) {
+          const separator = field.value && !/\s$/.test(field.value) ? ' ' : '';
+          field.value += separator + clean;
+        }
+
         finalChunk = '';
       }
-      document.getElementById('voiceStatus').textContent = interim ? 'Слышу: ' + interim : 'Слушаю…';
+
+      document.getElementById('voiceStatus').textContent =
+        interim ? 'Слышу: ' + interim : 'Слушаю…';
     };
 
     recognition.onerror = event => {
+      isListening = false;
+
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        voiceShouldRun = false;
+        document.getElementById('voiceStatus').textContent =
+          'Нет доступа к микрофону. Разреши доступ к микрофону в настройках браузера.';
+        updateVoiceButton();
+        return;
+      }
+
+      if (event.error === 'audio-capture') {
+        voiceShouldRun = false;
+        document.getElementById('voiceStatus').textContent =
+          'Микрофон недоступен.';
+        updateVoiceButton();
+        return;
+      }
+
       document.getElementById('voiceStatus').textContent =
-        event.error === 'not-allowed'
-          ? 'Нет доступа к микрофону. Разреши доступ в настройках Safari.'
-          : 'Распознавание остановлено: ' + event.error;
-      stopVoice(false);
+        'Распознавание прервалось. Перезапускаю…';
     };
 
-    recognition.onend = () => stopVoice(false);
+    recognition.onend = () => {
+      isListening = false;
 
-    try { recognition.start(); }
-    catch {
-      document.getElementById('voiceStatus').textContent = 'Не удалось запустить распознавание речи.';
+      if (voiceShouldRun) {
+        document.getElementById('voiceStatus').textContent =
+          'Продолжаю слушать…';
+        voiceRestartTimer = setTimeout(() => {
+          startVoiceSession(SpeechRecognition);
+        }, 350);
+      } else {
+        updateVoiceButton();
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      if (voiceShouldRun) {
+        voiceRestartTimer = setTimeout(() => {
+          startVoiceSession(SpeechRecognition);
+        }, 700);
+      }
     }
   }
 
-  function stopVoice(callStop=true) {
-    if (recognition && isListening && callStop) {
-      try { recognition.stop(); } catch {}
-    }
-    isListening = false;
+  function updateVoiceButton() {
     const btn = document.getElementById('voiceBtn');
-    if (btn) {
+    if (!btn) return;
+
+    if (voiceShouldRun) {
+      btn.classList.add('recording');
+      btn.textContent = '⏹ Остановить';
+    } else {
       btn.classList.remove('recording');
       btn.textContent = '🎙 Надиктовать сон';
     }
+  }
+
+  function stopVoice() {
+    voiceShouldRun = false;
+    clearTimeout(voiceRestartTimer);
+
+    if (recognition) {
+      recognition.onend = null;
+      try { recognition.stop(); } catch {}
+    }
+
+    recognition = null;
+    isListening = false;
+    updateVoiceButton();
+
+    const status = document.getElementById('voiceStatus');
+    if (status) status.textContent = 'Диктовка остановлена.';
   }
 
   // Статистика
